@@ -102,16 +102,21 @@ export function FormRendererOrganism({ config }: Props) {
     const controllers = new Map<string, AbortController>();
 
     for (const rule of apiPopulateRules) {
-      if (!rule.apiUrl || !rule.lookupKeyField) continue;
+      if (!rule.apiUrl) continue;
 
-      const keyValue = (allValues as Record<string, unknown>)[rule.lookupKeyField] as string | undefined;
+      // Standalone rule: no dependency field — fetch once on mount, never re-fetch.
+      const isStandalone = !rule.lookupKeyField;
+      const keyValue = isStandalone
+        ? undefined
+        : ((allValues as Record<string, unknown>)[rule.lookupKeyField!] as string | undefined);
+
       const isInitialized = initializedRulesRef.current.has(rule.id);
       const prevKeyValue = optionLoadedForRef.current[rule.id];
 
       // Skip if nothing has changed since the last fetch
       if (isInitialized && keyValue === prevKeyValue) continue;
 
-      const isKeyChanged = isInitialized && keyValue !== prevKeyValue;
+      const isKeyChanged = !isStandalone && isInitialized && keyValue !== prevKeyValue;
 
       initializedRulesRef.current.add(rule.id);
       optionLoadedForRef.current[rule.id] = keyValue;
@@ -126,8 +131,8 @@ export function FormRendererOrganism({ config }: Props) {
         });
       }
 
-      // No key value — clear options and skip the fetch
-      if (!keyValue) {
+      // Dependent field cleared — clear options and skip the fetch
+      if (!isStandalone && !keyValue) {
         setApiOptionStates((prev) => ({
           ...prev,
           [rule.targetFieldId]: { dynamicOptions: [], isLoadingOptions: false, optionsError: undefined },

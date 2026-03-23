@@ -136,13 +136,9 @@ export const DEMO_FORM_CONFIG: FormConfig = {
           name: "country",
           type: "single-select",
           label: "Country",
-          options: [
-            { value: "IN", label: "India" },
-            { value: "US", label: "United States" },
-            { value: "GB", label: "United Kingdom" },
-            { value: "AU", label: "Australia" },
-          ],
+          placeholder: "Select country…",
           required: true,
+          _rulesRef: ["rule-populate-countries-from-api"],
         },
         {
           id: "state",
@@ -255,6 +251,14 @@ export const DEMO_FORM_CONFIG: FormConfig = {
     //   targetFieldId: "phone",
     //   condition: { "==": [{ var: "preferredContact" }, "email"] },
     // },
+    {
+      id: "rule-populate-countries-from-api",
+      action: "POPULATE_OPTIONS",
+      targetFieldId: "country",
+      source: "api",
+      apiUrl: "/api/location/countries",
+      // No lookupKeyField — fetches once on mount, independent of any other field
+    },
     {
       id: "rule-populate-states-from-api",
       action: "POPULATE_OPTIONS",
