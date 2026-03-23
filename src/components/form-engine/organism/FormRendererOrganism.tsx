@@ -2,14 +2,16 @@
 
 import { useForm, FormProvider } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import {
   buildZodSchemaWithRules,
   buildDefaultValues,
   FormRulesEngine,
   buildSubmitPayload,
 } from "@/lib/form-engine";
-import type { FormConfig, FieldRuleState } from "@/lib/form-engine/types";
+import { fetchJson, interpolateUrl, postJson } from "@/lib/form-engine/apiClient";
+import type { SubmitFormResponse } from "@/app/api/form/submit/route";
+import type { FormConfig, FieldRuleState, SelectOption, PopulateOptionsRule } from "@/lib/form-engine/types";
 import { FormStepMolecule } from "../molecules/FormStepMolecule";
 import { cn } from "@/lib/utils";
 
@@ -19,63 +21,158 @@ interface Props {
 
 export function FormRendererOrganism({ config }: Props) {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [submissionId, setSubmissionId] = useState<string | undefined>();
+  const [submissionId] = useState<string | undefined>();
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submittedPayload, setSubmittedPayload] = useState<Record<string, unknown> | null>(null);
 
+  // ─── API-driven option state ─────────────────────────────────────────────────
+  const [apiOptionStates, setApiOptionStates] = useState<Record<string, Partial<FieldRuleState>>>({});
+
+  // Tracks which key value each API rule last loaded options for.
+  // `undefined` means the rule has never been initialised (first render).
+  const optionLoadedForRef = useRef<Record<string, string | undefined>>({});
+  // Tracks which rule IDs have been initialised at least once.
+  const initializedRulesRef = useRef(new Set<string>());
+
+  // ─── Form setup ──────────────────────────────────────────────────────────────
   const defaultValues = useMemo(() => buildDefaultValues(config.steps), [config]);
-  console.log("defaultValues", defaultValues);
   const rulesEngine = useMemo(() => new FormRulesEngine(config.rules), [config.rules]);
-  console.log("rulesEngine", rulesEngine);
 
   const currentStep = config.steps[currentStepIndex];
   const isLastStep = currentStepIndex === config.steps.length - 1;
   const isFirstStep = currentStepIndex === 0;
 
-  // Hold the latest dynamic schema in a ref so the stable resolver
-  // always validates against the most-recent schema without re-creating useForm.
+  // Hold the latest dynamic schema in a ref so the stable resolver always
+  // validates against the most-recent schema without re-creating useForm.
   const schemaRef = useRef(buildZodSchemaWithRules(config.steps, {}));
-  console.log("schemaRef", schemaRef.current);
 
   const methods = useForm({
     defaultValues,
     mode: "onTouched",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    resolver: (values, context, options) => {
-      console.log("[FormEngine] Resolver called — values:", values);
+    resolver: (values, context, options) =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return zodResolver(schemaRef.current)(values, context, options as any);
-    },
+      zodResolver(schemaRef.current)(values, context, options as any),
   });
 
-  const { watch, handleSubmit, trigger, formState: { errors, isSubmitting } } = methods;
+  const { watch, handleSubmit, trigger, formState: { isSubmitting } } = methods;
   const allValues = watch();
 
-  // Evaluate rules on every render (values-driven, cheap)
+  // ─── Sync rules (show/hide, enable/disable, lookupTable, setValidation) ─────
   const ruleStates: Record<string, FieldRuleState> = useMemo(
     () => rulesEngine.evaluate(allValues as Record<string, unknown>, currentStep.lookupTables),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [JSON.stringify(allValues), currentStep.id]
   );
 
-  // Dynamic schema including SET_VALIDATION rules
-  const dynamicSchema = useMemo(
-    () => buildZodSchemaWithRules(config.steps, ruleStates),
+  // ─── Merge sync + async rule states ─────────────────────────────────────────
+  const mergedRuleStates: Record<string, FieldRuleState> = useMemo(() => {
+    const merged: Record<string, FieldRuleState> = { ...ruleStates };
+    for (const [fieldId, apiState] of Object.entries(apiOptionStates)) {
+      const base: FieldRuleState = merged[fieldId] ?? { isHidden: false, isDisabled: false, addedValidations: [] };
+      merged[fieldId] = { ...base, ...apiState };
+    }
+    return merged;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(ruleStates)]
+  }, [ruleStates, apiOptionStates]);
+
+  // ─── Dynamic Zod schema (includes SET_VALIDATION rules) ─────────────────────
+  const dynamicSchema = useMemo(
+    () => buildZodSchemaWithRules(config.steps, mergedRuleStates),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(mergedRuleStates)]
   );
 
-  // Keep the resolver's schema ref in sync with the latest dynamic schema
   schemaRef.current = dynamicSchema;
-  console.log("[FormEngine] dynamicSchema synced — ruleStates:", ruleStates);
 
-  // Collect current step field ids for per-step validation
+  // ─── API-driven POPULATE_OPTIONS ─────────────────────────────────────────────
+  const apiPopulateRules = useMemo(
+    () =>
+      config.rules.filter(
+        (r): r is PopulateOptionsRule =>
+          r.action === "POPULATE_OPTIONS" && (r as PopulateOptionsRule).source === "api",
+      ),
+    [config.rules],
+  );
+
+  useEffect(() => {
+    if (apiPopulateRules.length === 0) return;
+
+    const controllers = new Map<string, AbortController>();
+
+    for (const rule of apiPopulateRules) {
+      if (!rule.apiUrl || !rule.lookupKeyField) continue;
+
+      const keyValue = (allValues as Record<string, unknown>)[rule.lookupKeyField] as string | undefined;
+      const isInitialized = initializedRulesRef.current.has(rule.id);
+      const prevKeyValue = optionLoadedForRef.current[rule.id];
+
+      // Skip if nothing has changed since the last fetch
+      if (isInitialized && keyValue === prevKeyValue) continue;
+
+      const isKeyChanged = isInitialized && keyValue !== prevKeyValue;
+
+      initializedRulesRef.current.add(rule.id);
+      optionLoadedForRef.current[rule.id] = keyValue;
+
+      // Reset the target field and any cascading fields when the dependency changes
+      if (isKeyChanged) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        methods.setValue(rule.targetFieldId as any, "");
+        rule.resetOnChange?.forEach((fieldId) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          methods.setValue(fieldId as any, "");
+        });
+      }
+
+      // No key value — clear options and skip the fetch
+      if (!keyValue) {
+        setApiOptionStates((prev) => ({
+          ...prev,
+          [rule.targetFieldId]: { dynamicOptions: [], isLoadingOptions: false, optionsError: undefined },
+        }));
+        continue;
+      }
+
+      const controller = new AbortController();
+      controllers.set(rule.id, controller);
+
+      setApiOptionStates((prev) => ({
+        ...prev,
+        [rule.targetFieldId]: { ...prev[rule.targetFieldId], isLoadingOptions: true, optionsError: undefined },
+      }));
+
+      const url = interpolateUrl(rule.apiUrl, allValues as Record<string, unknown>);
+
+      fetchJson<SelectOption[]>(url, { signal: controller.signal })
+        .then((options) => {
+          setApiOptionStates((prev) => ({
+            ...prev,
+            [rule.targetFieldId]: { dynamicOptions: options, isLoadingOptions: false },
+          }));
+        })
+        .catch((err: unknown) => {
+          if ((err as DOMException)?.name === "AbortError") return;
+          setApiOptionStates((prev) => ({
+            ...prev,
+            [rule.targetFieldId]: { isLoadingOptions: false, optionsError: "Failed to load options." },
+          }));
+        });
+    }
+
+    return () => {
+      controllers.forEach((c) => c.abort());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(allValues)]);
+
+  // ─── Step validation helpers ─────────────────────────────────────────────────
   function getCurrentStepFieldIds(): string[] {
     const ids: string[] = [];
     const walk = (step: typeof currentStep) => {
       for (const f of step.fields ?? []) {
-        if (f.type !== "submit" && !ruleStates[f.id]?.isHidden) ids.push(f.id);
+        if (f.type !== "submit" && !mergedRuleStates[f.id]?.isHidden) ids.push(f.id);
       }
       for (const child of step.steps ?? []) walk(child);
     };
@@ -84,35 +181,22 @@ export function FormRendererOrganism({ config }: Props) {
   }
 
   async function handleNext() {
-    console.log("handleNext");
     const fieldIds = getCurrentStepFieldIds();
-    console.log("fieldIds", fieldIds);
     const values = methods.getValues();
-    console.log("values", values);
-
-    // Manually validate current step fields against dynamic schema
     const result = dynamicSchema.safeParse(values);
-    console.log(
-      "[FormEngine] handleNext — safeParse",
-      result.success ? "✅ VALID" : "❌ INVALID",
-      result.success ? "" : result.error.issues
-    );
-    let stepValid = true;
 
+    let stepValid = true;
     if (!result.success) {
       const relevantErrors = result.error.issues.filter((issue) =>
-        fieldIds.includes(String(issue.path[0]))
+        fieldIds.includes(String(issue.path[0])),
       );
-      console.log("[FormEngine] handleNext — relevant step errors:", relevantErrors);
       if (relevantErrors.length > 0) {
         stepValid = false;
-        // Trigger validation to show errors on screen via the resolver
         await trigger(fieldIds as Parameters<typeof trigger>[0]);
       }
     }
 
     if (!stepValid) return;
-
     setCurrentStepIndex((i) => i + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -124,17 +208,12 @@ export function FormRendererOrganism({ config }: Props) {
 
   async function onSubmit(values: Record<string, unknown>) {
     setSubmitError(null);
-
-    const payload = buildSubmitPayload(
-      values,
-      config,
-      ruleStates,
-      { federationId: config.federationId, submissionId }
-    );
-    console.log("payload", payload);
+    const payload = buildSubmitPayload(values, config, mergedRuleStates, {
+      federationId: config.federationId,
+      submissionId,
+    });
     try {
-      // In demo mode, just show the payload
-      await new Promise((r) => setTimeout(r, 10000)); // simulate network
+      await postJson<SubmitFormResponse>("/api/form/submit", payload);
       setSubmittedPayload(payload);
       setSubmitSuccess(true);
     } catch {
@@ -142,17 +221,22 @@ export function FormRendererOrganism({ config }: Props) {
     }
   }
 
+  // ─── Success screen ──────────────────────────────────────────────────────────
   if (submitSuccess && submittedPayload) {
-    return <SuccessScreen payload={submittedPayload} onReset={() => {
-      setSubmitSuccess(false);
-      setSubmittedPayload(null);
-      setCurrentStepIndex(0);
-      methods.reset(defaultValues);
-    }} />;
+    return (
+      <SuccessScreen
+        payload={submittedPayload}
+        onReset={() => {
+          setSubmitSuccess(false);
+          setSubmittedPayload(null);
+          setCurrentStepIndex(0);
+          methods.reset(defaultValues);
+        }}
+      />
+    );
   }
 
   const totalSteps = config.steps.length;
-  const progressPct = ((currentStepIndex) / totalSteps) * 100;
 
   return (
     <FormProvider {...methods}>
@@ -161,9 +245,7 @@ export function FormRendererOrganism({ config }: Props) {
         <div className="mb-8">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-xl font-semibold text-slate-800">
-                {currentStep.title}
-              </h2>
+              <h2 className="text-xl font-semibold text-slate-800">{currentStep.title}</h2>
               <p className="text-sm text-slate-400 mt-0.5">
                 Step {currentStepIndex + 1} of {totalSteps}
               </p>
@@ -172,14 +254,6 @@ export function FormRendererOrganism({ config }: Props) {
               {Math.round(((currentStepIndex + 1) / totalSteps) * 100)}%
             </span>
           </div>
-
-          {/* Progress bar */}
-          {/* <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-indigo-400 to-indigo-600 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${((currentStepIndex + 1) / totalSteps) * 100}%` }}
-            />
-          </div> */}
 
           {/* Step dots */}
           <div className="flex gap-2 mt-3">
@@ -191,8 +265,8 @@ export function FormRendererOrganism({ config }: Props) {
                   idx < currentStepIndex
                     ? "bg-indigo-500"
                     : idx === currentStepIndex
-                    ? "bg-indigo-300"
-                    : "bg-slate-100"
+                      ? "bg-indigo-300"
+                      : "bg-slate-100",
                 )}
               />
             ))}
@@ -202,10 +276,7 @@ export function FormRendererOrganism({ config }: Props) {
         {/* Form fields */}
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <div className="min-h-[320px]">
-            <FormStepMolecule
-              step={currentStep}
-              ruleStates={ruleStates}
-            />
+            <FormStepMolecule step={currentStep} ruleStates={mergedRuleStates} />
           </div>
 
           {/* Error banner */}
@@ -244,8 +315,12 @@ export function FormRendererOrganism({ config }: Props) {
                 {isSubmitting ? (
                   <span className="flex items-center justify-center gap-2">
                     <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                      />
                     </svg>
                     Submitting…
                   </span>
@@ -261,7 +336,7 @@ export function FormRendererOrganism({ config }: Props) {
   );
 }
 
-// ─── Success Screen ─────────────────────────────────────────────────────────────
+// ─── Success Screen ──────────────────────────────────────────────────────────
 function SuccessScreen({
   payload,
   onReset,
@@ -274,7 +349,13 @@ function SuccessScreen({
   return (
     <div className="flex flex-col items-center text-center py-8">
       <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mb-4">
-        <svg className="w-8 h-8 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg
+          className="w-8 h-8 text-green-500"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
           <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </div>

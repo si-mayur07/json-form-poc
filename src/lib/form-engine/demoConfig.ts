@@ -145,40 +145,22 @@ export const DEMO_FORM_CONFIG: FormConfig = {
           required: true,
         },
         {
+          id: "state",
+          name: "state",
+          type: "single-select",
+          label: "State / Province",
+          placeholder: "Select state…",
+          _rulesRef: ["rule-populate-states-from-api"],
+        },
+        {
           id: "city",
           name: "city",
           type: "single-select",
           label: "City",
-          placeholder: "Select your city…",
-          _rulesRef: ["rule-populate-city-from-lookup"],
+          placeholder: "Select city…",
+          _rulesRef: ["rule-populate-cities-from-api"],
         },
       ],
-      lookupTables: {
-        citiesByCountry: {
-          IN: [
-            { value: "mumbai", label: "Mumbai" },
-            { value: "delhi", label: "Delhi" },
-            { value: "bangalore", label: "Bangalore" },
-            { value: "hyderabad", label: "Hyderabad" },
-          ],
-          US: [
-            { value: "nyc", label: "New York" },
-            { value: "sf", label: "San Francisco" },
-            { value: "la", label: "Los Angeles" },
-            { value: "chicago", label: "Chicago" },
-          ],
-          GB: [
-            { value: "london", label: "London" },
-            { value: "manchester", label: "Manchester" },
-            { value: "birmingham", label: "Birmingham" },
-          ],
-          AU: [
-            { value: "sydney", label: "Sydney" },
-            { value: "melbourne", label: "Melbourne" },
-            { value: "brisbane", label: "Brisbane" },
-          ],
-        },
-      },
     },
 
     {
@@ -274,12 +256,22 @@ export const DEMO_FORM_CONFIG: FormConfig = {
     //   condition: { "==": [{ var: "preferredContact" }, "email"] },
     // },
     {
-      id: "rule-populate-city-from-lookup",
+      id: "rule-populate-states-from-api",
+      action: "POPULATE_OPTIONS",
+      targetFieldId: "state",
+      source: "api",
+      apiUrl: "/api/location/states?country={country}",
+      lookupKeyField: "country",
+      // When country changes, also reset the city field to prevent stale selections
+      resetOnChange: ["city"],
+    },
+    {
+      id: "rule-populate-cities-from-api",
       action: "POPULATE_OPTIONS",
       targetFieldId: "city",
-      source: "lookupTable",
-      lookupTableKey: "citiesByCountry",
-      lookupKeyField: "country",
+      source: "api",
+      apiUrl: "/api/location/cities?state={state}",
+      lookupKeyField: "state",
     },
     {
       id: "rule-set-validation-required",

@@ -100,12 +100,20 @@ export interface EnableDisableRule extends BaseRule {
 export interface PopulateOptionsRule extends BaseRule {
   action: "POPULATE_OPTIONS";
   source: "lookupTable" | "api";
+  // lookupTable source
   lookupTableKey?: string;
   lookupKeyField?: string;
+  // api source
   apiUrl?: string;
   debounceMs?: number;
   valuePath?: string;
   labelPath?: string;
+  /**
+   * Field IDs to reset (clear their value) when `lookupKeyField` changes.
+   * Use this to cascade resets down a dependency chain
+   * (e.g. resetting city when country changes, beyond just the immediate target field).
+   */
+  resetOnChange?: string[];
 }
 
 export interface SetValidationRule extends BaseRule {

@@ -46,22 +46,15 @@ function buildFieldSchema(field: FieldConfig): z.ZodTypeAny {
 
   // Apply static validationRules from JSON config
   if (field.validationRules) {
-    console.log(`[FormEngine] buildFieldSchema — applying ${field.validationRules.length} validationRule(s) to field "${field.id}":`, field.validationRules);
     for (const rule of field.validationRules) {
       if (rule.type === "minLength" && typeof rule.value === "number" && schema instanceof z.ZodString) {
         schema = schema.min(rule.value, rule.message);
-        console.log(`[FormEngine]   ✔ minLength(${rule.value}) applied to "${field.id}"`);
       }
       if (rule.type === "maxLength" && typeof rule.value === "number" && schema instanceof z.ZodString) {
         schema = schema.max(rule.value, rule.message);
-        console.log(`[FormEngine]   ✔ maxLength(${rule.value}) applied to "${field.id}"`);
       }
       if (rule.type === "regex" && typeof rule.value === "string" && schema instanceof z.ZodString) {
         schema = schema.regex(new RegExp(rule.value), rule.message);
-        console.log(`[FormEngine]   ✔ regex(${rule.value}) applied to "${field.id}"`);
-      }
-      if (rule.type === "required") {
-        console.log(`[FormEngine]   ℹ "required" in validationRules is a no-op — use field.required:true instead for "${field.id}"`);
       }
     }
   }
