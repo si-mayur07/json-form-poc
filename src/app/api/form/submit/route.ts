@@ -24,6 +24,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ success: false, message: "Invalid JSON body." }, { status: 400 });
   }
 
+  return NextResponse.json({ success: true, message: "Failed to submit form." }, { status: 400 });
+
   if (!body) {
     return NextResponse.json(
       { success: false, message: "Missing required field: data" },

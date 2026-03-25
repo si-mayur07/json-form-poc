@@ -13,6 +13,7 @@ import { fetchJson, interpolateUrl, postJson } from "@/lib/form-engine/apiClient
 import type { SubmitFormResponse } from "@/app/api/form/submit/route";
 import type { FormConfig, FieldRuleState, SelectOption, PopulateOptionsRule } from "@/lib/form-engine/types";
 import { FormStepMolecule } from "../molecules/FormStepMolecule";
+import { NotificationMolecule } from "../molecules/NotificationMolecule";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -23,8 +24,14 @@ export function FormRendererOrganism({ config }: Props) {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [submissionId] = useState<string | undefined>();
   const [submitSuccess, setSubmitSuccess] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submittedPayload, setSubmittedPayload] = useState<Record<string, unknown> | null>(null);
+
+  // ─── Notification state ──────────────────────────────────────────────────────
+  const [toast, setToast] = useState<{ message: string; variant: "success" | "error" } | null>(null);
+  const [inlineError, setInlineError] = useState<string | null>(null);
+
+  // ─── Prefetch state ──────────────────────────────────────────────────────────
+  const [isPrefetching, setIsPrefetching] = useState(!!config.prefetch);
 
   // ─── API-driven option state ─────────────────────────────────────────────────
   const [apiOptionStates, setApiOptionStates] = useState<Record<string, Partial<FieldRuleState>>>({});
@@ -58,6 +65,36 @@ export function FormRendererOrganism({ config }: Props) {
 
   const { watch, handleSubmit, trigger, formState: { isSubmitting } } = methods;
   const allValues = watch();
+
+  // ─── Prefetch: populate form with server values on mount ─────────────────────
+  useEffect(() => {
+    if (!config.prefetch) return;
+    const { endpoint, fieldMap } = config.prefetch;
+    const controller = new AbortController();
+
+    setIsPrefetching(true);
+    fetchJson<Record<string, unknown>>(endpoint, { signal: controller.signal })
+      .then((data) => {
+        // Remap keys if a fieldMap is provided, otherwise use keys as-is
+        const remapped: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(data)) {
+          const fieldId = fieldMap?.[key] ?? key;
+          remapped[fieldId] = value;
+        }
+        console.log("remapped", {remapped,defaultValues});
+        // Merge prefetched values on top of static defaultValues
+        methods.reset({ ...defaultValues, ...remapped });
+      })
+      .catch((err: unknown) => {
+        if ((err as DOMException)?.name === "AbortError") return;
+        // Prefetch failure is non-fatal — form still works with static defaults
+        console.warn("[form-engine] prefetch failed:", err);
+      })
+      .finally(() => setIsPrefetching(false));
+
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.prefetch?.endpoint]);
 
   // ─── Sync rules (show/hide, enable/disable, lookupTable, setValidation) ─────
   const ruleStates: Record<string, FieldRuleState> = useMemo(
@@ -212,7 +249,8 @@ export function FormRendererOrganism({ config }: Props) {
   }
 
   async function onSubmit(values: Record<string, unknown>) {
-    setSubmitError(null);
+    setInlineError(null);
+    setToast(null);
     const payload = buildSubmitPayload(values, config, mergedRuleStates, {
       federationId: config.federationId,
       submissionId,
@@ -220,124 +258,157 @@ export function FormRendererOrganism({ config }: Props) {
     try {
       await postJson<SubmitFormResponse>("/api/form/submit", payload);
       setSubmittedPayload(payload);
+      setToast({ message: "Application submitted successfully!", variant: "success" });
       setSubmitSuccess(true);
     } catch {
-      setSubmitError("Something went wrong. Please try again.");
+      setInlineError("Something went wrong. Please try again.");
+      setToast({ message: "Submission failed. Please try again.", variant: "error" });
     }
-  }
-
-  // ─── Success screen ──────────────────────────────────────────────────────────
-  if (submitSuccess && submittedPayload) {
-    return (
-      <SuccessScreen
-        payload={submittedPayload}
-        onReset={() => {
-          setSubmitSuccess(false);
-          setSubmittedPayload(null);
-          setCurrentStepIndex(0);
-          methods.reset(defaultValues);
-        }}
-      />
-    );
   }
 
   const totalSteps = config.steps.length;
 
+  // Toast must always be rendered at the top level so it survives the
+  // SuccessScreen swap (early return would unmount it before it could animate in).
   return (
-    <FormProvider {...methods}>
-      <div className="w-full">
-        {/* Progress header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-800">{currentStep.title}</h2>
-              <p className="text-sm text-slate-400 mt-0.5">
-                Step {currentStepIndex + 1} of {totalSteps}
-              </p>
-            </div>
-            <span className="text-sm font-semibold text-indigo-500">
-              {Math.round(((currentStepIndex + 1) / totalSteps) * 100)}%
-            </span>
-          </div>
+    <>
+      {/* Toast — always mounted regardless of which screen is showing */}
+      <NotificationMolecule
+        show={!!toast}
+        message={toast?.message ?? ""}
+        variant={toast?.variant ?? "info"}
+        // mode="toast"
+        position="bottom-right"
+        onDismiss={() => setToast(null)}
+      />
 
-          {/* Step dots */}
-          <div className="flex gap-2 mt-3">
-            {config.steps.map((step, idx) => (
-              <div
-                key={step.id}
-                className={cn(
-                  "h-1.5 flex-1 rounded-full transition-all duration-300",
-                  idx < currentStepIndex
-                    ? "bg-indigo-500"
-                    : idx === currentStepIndex
-                      ? "bg-indigo-300"
-                      : "bg-slate-100",
-                )}
-              />
-            ))}
-          </div>
+      {/* ─── Prefetch loading / Success / Form ──────────────────────────────── */}
+      {isPrefetching ? (
+        /* Skeleton while prefetch is in-flight */
+        <div className="w-full space-y-4 animate-pulse py-2">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="space-y-2">
+              <div className="h-3.5 w-24 rounded-full bg-slate-200" />
+              <div className="h-11 w-full rounded-xl bg-slate-100" />
+            </div>
+          ))}
         </div>
+      ) : submitSuccess && submittedPayload ? (
+        <SuccessScreen
+          payload={submittedPayload}
+          onReset={() => {
+            setSubmitSuccess(false);
+            setSubmittedPayload(null);
+            setCurrentStepIndex(0);
+            setToast(null);
+            setInlineError(null);
+            methods.reset(defaultValues);
+          }}
+        />
+      ) : (
+        /* ─── Form ─────────────────────────────────────────────────────────── */
+        <FormProvider {...methods}>
+          <div className="w-full">
+            {/* Progress header */}
+            <div className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-800">{currentStep.title}</h2>
+                  <p className="text-sm text-slate-400 mt-0.5">
+                    Step {currentStepIndex + 1} of {totalSteps}
+                  </p>
+                </div>
+                <span className="text-sm font-semibold text-indigo-500">
+                  {Math.round(((currentStepIndex + 1) / totalSteps) * 100)}%
+                </span>
+              </div>
 
-        {/* Form fields */}
-        <form onSubmit={handleSubmit(onSubmit)} noValidate>
-          <div className="min-h-[320px]">
-            <FormStepMolecule step={currentStep} ruleStates={mergedRuleStates} />
-          </div>
-
-          {/* Error banner */}
-          {submitError && (
-            <div className="mt-4 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-600">
-              {submitError}
+              {/* Step dots */}
+              <div className="flex gap-2 mt-3">
+                {config.steps.map((step, idx) => (
+                  <div
+                    key={step.id}
+                    className={cn(
+                      "h-1.5 flex-1 rounded-full transition-all duration-300",
+                      idx < currentStepIndex
+                        ? "bg-indigo-500"
+                        : idx === currentStepIndex
+                          ? "bg-indigo-300"
+                          : "bg-slate-100",
+                    )}
+                  />
+                ))}
+              </div>
             </div>
-          )}
 
-          {/* Navigation */}
-          <div className="flex gap-3 mt-8 pt-6 border-t border-slate-100">
-            {!isFirstStep && (
-              <button
-                type="button"
-                onClick={handleBack}
-                className="flex-1 py-3 px-5 rounded-xl border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-              >
-                ← Back
-              </button>
-            )}
+            {/* Form fields */}
+            <form onSubmit={handleSubmit(onSubmit)} noValidate>
+              <div className="min-h-[320px]">
+                <FormStepMolecule step={currentStep} ruleStates={mergedRuleStates} />
+              </div>
 
-            {!isLastStep ? (
-              <button
-                type="button"
-                onClick={handleNext}
-                className="flex-1 py-3 px-5 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:scale-[0.98] transition-all"
-              >
-                Continue →
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="flex-1 py-3 px-5 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {isSubmitting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-                      />
-                    </svg>
-                    Submitting…
-                  </span>
-                ) : (
-                  "Submit Application ✓"
+              {/* Inline error above navigation buttons */}
+              {inlineError && (
+                <div className="mt-4">
+                  <NotificationMolecule
+                    show={!!inlineError}
+                    message={inlineError}
+                    variant="error"
+                    mode="inline"
+                    onDismiss={() => setInlineError(null)}
+                  />
+                </div>
+              )}
+
+              {/* Navigation */}
+              <div className="flex gap-3 mt-8 pt-6 border-t border-slate-100">
+                {!isFirstStep && (
+                  <button
+                    type="button"
+                    onClick={handleBack}
+                    className="flex-1 py-3 px-5 rounded-xl border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                  >
+                    ← Back
+                  </button>
                 )}
-              </button>
-            )}
+
+                {!isLastStep ? (
+                  <button
+                    type="button"
+                    onClick={handleNext}
+                    className="flex-1 py-3 px-5 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:scale-[0.98] transition-all"
+                  >
+                    Continue →
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="flex-1 py-3 px-5 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {isSubmitting ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                          <path
+                            className="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                          />
+                        </svg>
+                        Submitting…
+                      </span>
+                    ) : (
+                      "Submit Application ✓"
+                    )}
+                  </button>
+                )}
+              </div>
+            </form>
           </div>
-        </form>
-      </div>
-    </FormProvider>
+        </FormProvider>
+      )}
+    </>
   );
 }
 

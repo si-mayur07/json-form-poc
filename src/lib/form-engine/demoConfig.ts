@@ -11,6 +11,13 @@ export const DEMO_FORM_CONFIG: FormConfig = {
     borderRadius: "10px",
   },
 
+  // prefetch: {
+  //   endpoint: "/api/form/prefill",
+  //   // No fieldMap needed here — response keys already match field IDs.
+  //   // Example of fieldMap usage (when API keys differ from field IDs):
+  //   // fieldMap: { "first_name": "fullName", "email_address": "email" }
+  // },
+
   submission: {
     submitEndpoint: "/api/submit",
     partialSubmitEndpoint: "/api/submit/partial",
@@ -130,6 +137,28 @@ export const DEMO_FORM_CONFIG: FormConfig = {
       id: "step-2-location",
       title: "Location",
       order: 2,
+      lookupTables: {
+        // Keys must exactly match the selected country field value (lowercase)
+        statesByCountry: {
+          "us": [{ value: "ca", label: "California" }, { value: "ny", label: "New York" }, { value: "tx", label: "Texas" }],
+          "in": [{ value: "mh", label: "Maharashtra" }, { value: "ka", label: "Karnataka" }, { value: "dl", label: "Delhi" }],
+          "gb": [{ value: "eng", label: "England" }, { value: "sct", label: "Scotland" }, { value: "wls", label: "Wales" }],
+          "au": [{ value: "nsw", label: "New South Wales" }, { value: "vic", label: "Victoria" }, { value: "qld", label: "Queensland" }],
+        },
+        // Keys must exactly match the selected state field value (lowercase)
+        citiesByState: {
+          "ca": [{ value: "la", label: "Los Angeles" }, { value: "sf", label: "San Francisco" }, { value: "sd", label: "San Diego" }],
+          "ny": [{ value: "nyc", label: "New York City" }, { value: "buf", label: "Buffalo" }, { value: "alb", label: "Albany" }],
+          "tx": [{ value: "hou", label: "Houston" }, { value: "dal", label: "Dallas" }, { value: "aus", label: "Austin" }],
+          "mh": [{ value: "mum", label: "Mumbai" }, { value: "pun", label: "Pune" }, { value: "nag", label: "Nagpur" }],
+          "ka": [{ value: "blr", label: "Bengaluru" }, { value: "mys", label: "Mysuru" }, { value: "hub", label: "Hubli" }],
+          "dl": [{ value: "ndl", label: "New Delhi" }, { value: "ndw", label: "Noida" }, { value: "grg", label: "Gurugram" }],
+          "eng": [{ value: "lon", label: "London" }, { value: "man", label: "Manchester" }, { value: "bri", label: "Bristol" }],
+          "sct": [{ value: "edi", label: "Edinburgh" }, { value: "gla", label: "Glasgow" }],
+          "nsw": [{ value: "syd", label: "Sydney" }, { value: "new", label: "Newcastle" }],
+          "vic": [{ value: "mel", label: "Melbourne" }, { value: "gel", label: "Geelong" }],
+        },
+      },
       fields: [
         {
           id: "country",
@@ -139,6 +168,14 @@ export const DEMO_FORM_CONFIG: FormConfig = {
           placeholder: "Select country…",
           required: true,
           _rulesRef: ["rule-populate-countries-from-api"],
+          options: [
+            { value: "us", label: "United States" },
+            { value: "in", label: "India" },
+            { value: "gb", label: "United Kingdom" },
+            { value: "au", label: "Australia" },
+            { value: "ca", label: "Canada" },
+            { value: "nz", label: "New Zealand" },
+          ],
         },
         {
           id: "state",
@@ -251,31 +288,48 @@ export const DEMO_FORM_CONFIG: FormConfig = {
     //   targetFieldId: "phone",
     //   condition: { "==": [{ var: "preferredContact" }, "email"] },
     // },
+    // {
+    //   id: "rule-populate-countries-from-api",
+    //   action: "POPULATE_OPTIONS",
+    //   targetFieldId: "country",
+    //   source: "api",
+    //   apiUrl: "/api/location/countries",
+    //   // No lookupKeyField — fetches once on mount, independent of any other field
+    // },
+    // {
+    //   id: "rule-populate-states-from-api",
+    //   action: "POPULATE_OPTIONS",
+    //   targetFieldId: "state",
+    //   source: "api",
+    //   apiUrl: "/api/location/states?country={country}",
+    //   lookupKeyField: "country",
+    //   // When country changes, also reset the city field to prevent stale selections
+    //   resetOnChange: ["city"],
+    // },
     {
-      id: "rule-populate-countries-from-api",
-      action: "POPULATE_OPTIONS",
-      targetFieldId: "country",
-      source: "api",
-      apiUrl: "/api/location/countries",
-      // No lookupKeyField — fetches once on mount, independent of any other field
-    },
-    {
-      id: "rule-populate-states-from-api",
+      id: "rule-populate-states-from-lookup",
       action: "POPULATE_OPTIONS",
       targetFieldId: "state",
-      source: "api",
-      apiUrl: "/api/location/states?country={country}",
-      lookupKeyField: "country",
-      // When country changes, also reset the city field to prevent stale selections
+      source: "lookupTable",
+      lookupTableKey: "statesByCountry",   // name of the table in lookupTables
+      lookupKeyField: "country",           // which field drives the lookup
       resetOnChange: ["city"],
     },
+    // {
+    //   id: "rule-populate-cities-from-api",
+    //   action: "POPULATE_OPTIONS",
+    //   targetFieldId: "city",
+    //   source: "api",
+    //   apiUrl: "/api/location/cities?state={state}",
+    //   lookupKeyField: "state",
+    // },
     {
-      id: "rule-populate-cities-from-api",
+      id: "rule-populate-cities-from-lookup",
       action: "POPULATE_OPTIONS",
       targetFieldId: "city",
-      source: "api",
-      apiUrl: "/api/location/cities?state={state}",
-      lookupKeyField: "state",
+      source: "lookupTable",
+      lookupTableKey: "citiesByState",   // name of the table in lookupTables
+      lookupKeyField: "state",           // which field drives the lookup
     },
     {
       id: "rule-set-validation-required",

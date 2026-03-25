@@ -136,6 +136,22 @@ export interface SubmissionConfig {
   attachSubmissionId: boolean;
 }
 
+// ─── Prefetch ────────────────────────────────────────────────────────────────────
+
+export interface PrefetchConfig {
+  /**
+   * API endpoint that returns an object of { fieldId: value } pairs.
+   * Called once on mount to pre-populate the form (e.g. edit/resume flows).
+   */
+  endpoint: string;
+  /**
+   * Optional key remapping: { responseKey: fieldId }.
+   * Use when the API response keys don't match field IDs.
+   * e.g. { "first_name": "fullName" } maps response.first_name → form field "fullName"
+   */
+  fieldMap?: Record<string, string>;
+}
+
 // ─── Top-level Form Config ──────────────────────────────────────────────────────
 
 export interface FormConfig {
@@ -144,6 +160,7 @@ export interface FormConfig {
   formId: string;
   federationId: string;
   theme?: ThemeTokens;
+  prefetch?: PrefetchConfig;
   submission: SubmissionConfig;
   steps: StepConfig[];
   rules: RuleSchema[];
